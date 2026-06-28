@@ -1,6 +1,6 @@
 # sitectl-omeka-classic
 
-`sitectl-omeka-classic` adds Omeka Classic create metadata, lifecycle operations, API helpers, resource shortcuts, plugin maintenance, validation, and health checks to [`sitectl`](https://sitectl.libops.io). It works with the [LibOps Omeka Classic template](https://github.com/libops/omeka-classic).
+`sitectl-omeka-classic` simplifies the creation and operation of repositories created using the [LibOps Omeka Classic template](https://github.com/libops/omeka-classic). It provides sitectl commands for the Omeka Classic API, resource shortcuts, plugin maintenance, validation, and health checks.
 
 Documentation: https://sitectl.libops.io/plugins/omeka-classic
 
