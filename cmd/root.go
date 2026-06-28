@@ -63,7 +63,7 @@ func RegisterCommands(s *plugin.SDK) {
 		ReadyMessage:  "Omeka Classic is ready for use through sitectl.",
 	})
 	registerApplicationComponents(s, "Omeka Classic", "omeka-classic")
-	s.RegisterHealthcheckRunner(omekaClassicHealthcheckRunner{})
+	s.RegisterHealthcheckRunner(omekaClassicHealthcheckRunner)
 	registerOmekaClassicCommands(s)
 }
 
