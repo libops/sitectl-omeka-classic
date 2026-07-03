@@ -70,10 +70,8 @@ func RegisterCommands(s *plugin.SDK) {
 	registerApplicationComponents(s, "Omeka Classic", "omeka-classic")
 	s.RegisterHealthcheckRunner(omekaClassicHealthcheckRunner)
 	s.RegisterIngressRouteProvider(plugin.StandardComposeWebIngressRoutesWithOptions(plugin.StandardComposeWebIngressOptions{
-		AppService:      "omeka-classic",
-		Router:          "omeka-classic-web",
-		DomainVariables: []string{"DOMAIN"},
-		HTTPSVariables:  []string{"OMEKA_CLASSIC_ENABLE_HTTPS"},
+		AppService: "omeka-classic",
+		Router:     "omeka-classic-web",
 	}))
 	registerOmekaClassicCommands(s)
 }
@@ -83,12 +81,7 @@ func registerApplicationComponents(s *plugin.SDK, displayName, appService string
 		AppService:      appService,
 		HTTPEntrypoint:  "web",
 		HTTPSEntrypoint: "websecure",
-		ServiceEnvTemplates: map[string]map[string]string{
-			appService: {
-				"DOMAIN":                     "{domain}",
-				"OMEKA_CLASSIC_ENABLE_HTTPS": "{https_enabled}",
-			},
-		},
+		AppEnvDeletes:   []string{"DOMAIN", "OMEKA_CLASSIC_ENABLE_HTTPS"},
 	})
 	if err != nil {
 		panic(err)
