@@ -3,7 +3,6 @@ package cmd
 import (
 	corecomponent "github.com/libops/sitectl/pkg/component"
 	"github.com/libops/sitectl/pkg/plugin"
-	coredevmode "github.com/libops/sitectl/pkg/services/devmode"
 	coretraefik "github.com/libops/sitectl/pkg/services/traefik"
 )
 
@@ -29,7 +28,7 @@ func createDefinition() plugin.CreateSpec {
 			"docker compose build",
 		},
 		Images: []plugin.ComposeImageSpec{
-			{Service: "omeka-classic", Image: "libops/omeka-classic:nginx-1.30.3-php84", BuildPolicy: plugin.BuildPolicyIfNotPresent},
+			{Service: "omeka-classic", Image: "libops/omeka-classic:3.2.1-php84", BuildPolicy: plugin.BuildPolicyAlways},
 		},
 		DockerComposeInit: []string{
 			"mkdir -p ./secrets",
@@ -45,15 +44,16 @@ func createDefinition() plugin.CreateSpec {
 			{Name: "omeka-classic-files"},
 		},
 		DockerComposeUp: []string{
-			"docker compose up --remove-orphans -d",
+			"docker compose up --remove-orphans --wait --wait-timeout 600 -d",
 		},
 		DockerComposeDown: []string{"docker compose down"},
 		DockerComposeRollout: []string{
-			"docker compose pull --ignore-buildable --quiet || docker compose pull --ignore-buildable || true",
+			"docker compose pull --ignore-buildable --quiet || docker compose pull --ignore-buildable",
 			"docker compose build --pull",
 			"mkdir -p ./secrets",
 			"docker compose run --rm init",
-			"docker compose up --remove-orphans --wait --pull missing --quiet-pull -d",
+			"docker compose up --remove-orphans --pull missing --quiet-pull -d",
+			"printf '%s\\n' 'ACTION REQUIRED: Omeka Classic may require a database migration. Sign in at /admin and complete any upgrade prompt before resuming normal operation.'",
 		},
 	}
 }
@@ -88,18 +88,8 @@ func registerApplicationComponents(s *plugin.SDK, displayName, appService string
 	if err != nil {
 		panic(err)
 	}
-	devMode, err := coredevmode.Component(coredevmode.Options{
-		AppService: appService,
-		Volumes: []string{
-			"./plugins:/var/www/omeka-classic/plugins:z,rw",
-			"./themes:/var/www/omeka-classic/themes:z,rw",
-		},
-	})
-	if err != nil {
-		panic(err)
-	}
 	s.RegisterServiceComponents(plugin.ServiceComponentRegistryOptions{
 		DisplayName: displayName,
-		Components:  []corecomponent.ComposeServiceComponent{ingress, devMode},
+		Components:  []corecomponent.ComposeServiceComponent{ingress},
 	})
 }
