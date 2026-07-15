@@ -8,7 +8,7 @@ import (
 
 const (
 	createRepo   = "https://github.com/libops/omeka-classic"
-	createBranch = "main"
+	createBranch = "v1.0.0"
 	pluginName   = "omeka-classic"
 	defaultPath  = "./omeka-classic"
 )
