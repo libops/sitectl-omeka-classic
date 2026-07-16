@@ -43,6 +43,7 @@ brews:
   - name: sitectl-omeka-classic
     description: "A sitectl plugin for Omeka Classic stacks"
     homepage: "https://github.com/libops/sitectl-omeka-classic"
+    url_template: "https://github.com/libops/sitectl-omeka-classic/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     license: MIT
     commit_author:
       name: sitectl-dev[bot]
