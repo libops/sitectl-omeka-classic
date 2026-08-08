@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -19,7 +18,8 @@ const (
 	omekaClassicService          = "omeka-classic"
 	omekaClassicRoot             = "/var/www/omeka-classic"
 	omekaClassicExpectedVersion  = "3.2.1"
-	omekaClassicDatabaseProbe    = `. /usr/local/share/libops/database.sh; database_mariadb_with_password "$DB_PASSWORD" --host="$DB_HOST" --port="$DB_PORT" --user="$DB_USER" --database="$DB_NAME" --batch --skip-column-names --execute="SELECT CURRENT_USER();"`
+	omekaClassicDatabaseProbe    = `. /usr/local/share/libops/database.sh; mapfile -d '' -t database < <(php -r '$config = parse_ini_file("db.ini", true, INI_SCANNER_RAW); $database = $config["database"] ?? null; if (!is_array($database)) { fwrite(STDERR, "db.ini omitted [database]\n"); exit(2); } foreach (["host", "port", "username", "password", "dbname"] as $key) { $value = $database[$key] ?? ""; if (!is_string($value) || $value === "") { fwrite(STDERR, "db.ini database." . $key . " is empty\n"); exit(2); } fwrite(STDOUT, $value . "\0"); }'); if [ "${#database[@]}" -ne 5 ]; then printf '%s\n' 'could not read database credentials from db.ini' >&2; exit 2; fi; database_mariadb_with_password "${database[3]}" --host="${database[0]}" --port="${database[1]}" --user="${database[2]}" --database="${database[4]}" --batch --skip-column-names --execute="SELECT CURRENT_USER();"`
+	omekaClassicMetadataProbe    = `$_SERVER["HTTP_HOST"] = "127.0.0.1"; $_SERVER["SCRIPT_NAME"] = "/index.php"; require "bootstrap.php"; $application = new Omeka_Application(APPLICATION_ENV); $application->bootstrap(["Config", "Db", "Options"]); echo json_encode(["title" => get_option("site_title"), "theme" => get_option("public_theme"), "database_version" => get_option("omeka_version")], JSON_THROW_ON_ERROR);`
 	omekaClassicReadOnlyStorage  = `test -r /var/www/omeka-classic/files && test -w /var/www/omeka-classic/files && printf '%s\n' 'storage writable'`
 	omekaClassicStorageRoundTrip = `probe=/var/www/omeka-classic/files/.sitectl-verify-$$; cleanup() { rm -f -- "$probe"; }; trap cleanup EXIT INT TERM; printf '%s' sitectl-verify >"$probe"; test "$(cat "$probe")" = sitectl-verify; cleanup; trap - EXIT INT TERM; printf '%s\n' 'storage round trip complete'`
 )
@@ -78,8 +78,8 @@ func runOmekaClassicVerifyChecks(ctx context.Context, runtime omekaClassicVerify
 	migrationOutput, migrationErr := runtime.ExecCapture(ctx, []string{"curl", "--connect-timeout", "2", "--max-time", "30", "-sS", "-D", "-", "http://127.0.0.1/"})
 	results = append(results, omekaClassicMigrationResult(migrationOutput, migrationErr))
 
-	apiOutput, apiErr := runtime.ExecCapture(ctx, []string{"curl", "--connect-timeout", "2", "--max-time", "30", "-fsS", "-H", "Accept: application/json", "http://127.0.0.1/api/site"})
-	results = append(results, omekaClassicAPIResult(apiOutput, apiErr))
+	metadataOutput, metadataErr := runtime.ExecCapture(ctx, []string{"php", "-r", omekaClassicMetadataProbe})
+	results = append(results, omekaClassicApplicationResult(metadataOutput, metadataErr))
 
 	storageScript := omekaClassicReadOnlyStorage
 	storageDetail := "files storage is writable by the Omeka Classic service account"
@@ -143,29 +143,28 @@ func omekaClassicMigrationResult(output string, commandErr error) sitevalidate.R
 	return omekaClassicVerifyOK("verify:omeka-classic:migration", fmt.Sprintf("no browser-migration marker was returned; private route status %d", status))
 }
 
-func omekaClassicAPIResult(output string, commandErr error) sitevalidate.Result {
+func omekaClassicApplicationResult(output string, commandErr error) sitevalidate.Result {
 	if commandErr != nil {
-		return omekaClassicVerifyFailed("verify:omeka-classic:api", commandErr.Error(), "confirm the Omeka Classic REST API is enabled and reachable")
+		return omekaClassicVerifyFailed("verify:omeka-classic:application-config", commandErr.Error(), "inspect the rendered db.ini and default Omeka Classic installation metadata")
 	}
-	var site struct {
-		Title        string `json:"title"`
-		OmekaURL     string `json:"omeka_url"`
-		OmekaVersion string `json:"omeka_version"`
+	var metadata struct {
+		Title           string `json:"title"`
+		Theme           string `json:"theme"`
+		DatabaseVersion string `json:"database_version"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &site); err != nil {
-		return omekaClassicVerifyFailed("verify:omeka-classic:api", fmt.Sprintf("decode site response: %v", err), "inspect the Omeka Classic REST API response")
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &metadata); err != nil {
+		return omekaClassicVerifyFailed("verify:omeka-classic:application-config", fmt.Sprintf("decode application metadata: %v", err), "inspect the rendered db.ini and default Omeka Classic installation metadata")
 	}
-	if strings.TrimSpace(site.Title) == "" {
-		return omekaClassicVerifyFailed("verify:omeka-classic:api", "site response omitted title", "complete Omeka Classic site configuration")
+	if strings.TrimSpace(metadata.Title) == "" {
+		return omekaClassicVerifyFailed("verify:omeka-classic:application-config", "application metadata omitted the site title", "complete Omeka Classic site configuration")
 	}
-	parsed, err := url.ParseRequestURI(site.OmekaURL)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
-		return omekaClassicVerifyFailed("verify:omeka-classic:api", fmt.Sprintf("site response returned invalid omeka_url %q", site.OmekaURL), "reconcile the canonical HTTP or HTTPS ingress URL")
+	if strings.TrimSpace(metadata.Theme) == "" {
+		return omekaClassicVerifyFailed("verify:omeka-classic:application-config", "application metadata omitted the public theme", "select a public Omeka Classic theme")
 	}
-	if site.OmekaVersion != omekaClassicExpectedVersion {
-		return omekaClassicVerifyFailed("verify:omeka-classic:api", fmt.Sprintf("API reports version %s, expected %s", site.OmekaVersion, omekaClassicExpectedVersion), "rebuild from the supported Omeka Classic image")
+	if metadata.DatabaseVersion != omekaClassicExpectedVersion {
+		return omekaClassicVerifyFailed("verify:omeka-classic:application-config", fmt.Sprintf("database metadata reports version %s, expected %s", metadata.DatabaseVersion, omekaClassicExpectedVersion), "back up the site and complete the supported browser migration")
 	}
-	return omekaClassicVerifyOK("verify:omeka-classic:api", fmt.Sprintf("site metadata returned for %q", site.Title))
+	return omekaClassicVerifyOK("verify:omeka-classic:application-config", fmt.Sprintf("site %q uses theme %q and database version %s", metadata.Title, metadata.Theme, metadata.DatabaseVersion))
 }
 
 func omekaClassicVerifyOK(name, detail string) sitevalidate.Result {

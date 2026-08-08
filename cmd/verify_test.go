@@ -29,8 +29,8 @@ func TestOmekaClassicVerifyChecksApplicationBehavior(t *testing.T) {
 			return "omeka_classic@%", nil
 		case strings.Contains(joined, "-D -") && strings.Contains(joined, "http://127.0.0.1/"):
 			return "HTTP/1.1 200 OK\r\n\r\n<html>current</html>", nil
-		case strings.Contains(joined, "/api/site"):
-			return `{"title":"Museum","omeka_url":"http://localhost","omeka_version":"3.2.1"}`, nil
+		case strings.Contains(joined, "site_title"):
+			return `{"title":"Museum","theme":"default","database_version":"3.2.1"}`, nil
 		case strings.Contains(joined, "test -w"):
 			return "storage writable", nil
 		default:
@@ -60,14 +60,42 @@ func TestOmekaClassicVerifyRejectsFailedPrivateRoute(t *testing.T) {
 	}
 }
 
-func TestOmekaClassicVerifyRejectsRootDatabaseAndMalformedAPI(t *testing.T) {
+func TestOmekaClassicVerifyRejectsRootDatabaseAndMalformedApplicationMetadata(t *testing.T) {
 	t.Parallel()
 
 	if result := omekaClassicDatabaseResult("root@localhost", nil); result.Status != sitevalidate.StatusFailed {
 		t.Fatalf("root database identity was accepted: %+v", result)
 	}
-	if result := omekaClassicAPIResult(`{"error":"not site metadata"}`, nil); result.Status != sitevalidate.StatusFailed {
-		t.Fatalf("malformed site metadata was accepted: %+v", result)
+	if result := omekaClassicApplicationResult(`{"error":"not application metadata"}`, nil); result.Status != sitevalidate.StatusFailed {
+		t.Fatalf("malformed application metadata was accepted: %+v", result)
+	}
+}
+
+func TestOmekaClassicVerifyDatabaseProbeUsesRenderedConfiguration(t *testing.T) {
+	t.Parallel()
+
+	for _, required := range []string{"parse_ini_file(\"db.ini\"", "INI_SCANNER_RAW", "database_mariadb_with_password", "${database[3]}"} {
+		if !strings.Contains(omekaClassicDatabaseProbe, required) {
+			t.Fatalf("database probe does not read %q from rendered configuration: %s", required, omekaClassicDatabaseProbe)
+		}
+	}
+	for _, forbidden := range []string{"$DB_HOST", "$DB_PORT", "$DB_USER", "$DB_PASSWORD", "$DB_NAME"} {
+		if strings.Contains(omekaClassicDatabaseProbe, forbidden) {
+			t.Fatalf("database probe still depends on application environment %q: %s", forbidden, omekaClassicDatabaseProbe)
+		}
+	}
+}
+
+func TestOmekaClassicVerifyApplicationMetadataDoesNotRequireOptionalAPI(t *testing.T) {
+	t.Parallel()
+
+	if strings.Contains(omekaClassicMetadataProbe, "/api/") {
+		t.Fatalf("application metadata probe still depends on the optional REST API: %s", omekaClassicMetadataProbe)
+	}
+	for _, required := range []string{"Omeka_Application", "site_title", "public_theme", "omeka_version"} {
+		if !strings.Contains(omekaClassicMetadataProbe, required) {
+			t.Fatalf("application metadata probe omitted %q: %s", required, omekaClassicMetadataProbe)
+		}
 	}
 }
 
@@ -84,8 +112,8 @@ func TestOmekaClassicVerifyDisposableModeUsesReversibleFilesProbe(t *testing.T) 
 			return "omeka_classic@%", nil
 		case strings.Contains(joined, "-D -") && strings.Contains(joined, "http://127.0.0.1/"):
 			return "HTTP/1.1 200 OK\r\n\r\n<html>current</html>", nil
-		case strings.Contains(joined, "/api/site"):
-			return `{"title":"Museum","omeka_url":"http://localhost","omeka_version":"3.2.1"}`, nil
+		case strings.Contains(joined, "site_title"):
+			return `{"title":"Museum","theme":"default","database_version":"3.2.1"}`, nil
 		case strings.Contains(joined, ".sitectl-verify"):
 			storageCommand = joined
 			return "storage round trip complete", nil
