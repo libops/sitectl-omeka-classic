@@ -1,11 +1,6 @@
 package cmd
 
 import (
-	"errors"
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,13 +10,16 @@ import (
 func TestCreateDefinitionLifecycleContract(t *testing.T) {
 	t.Parallel()
 	spec := createDefinition()
+	if spec.DockerComposeBranch != "v1.2.0" {
+		t.Fatalf("Omeka Classic template revision = %q, want immutable v1.2.0", spec.DockerComposeBranch)
+	}
 	if len(spec.Images) != 1 || spec.Images[0].Image != "libops/omeka-classic:3.2.1-php84" || spec.Images[0].BuildPolicy != plugin.BuildPolicyAlways {
 		t.Fatalf("unexpected Omeka Classic image contract: %+v", spec.Images)
 	}
 	if len(spec.DockerComposeUp) != 1 || !strings.Contains(spec.DockerComposeUp[0], "--wait --wait-timeout 600") {
 		t.Fatalf("create must wait for service health before reporting ready: %+v", spec.DockerComposeUp)
 	}
-	assertManualMigrationRollout(t, spec.DockerComposeRollout, "omeka-classic", "Public site is unavailable until the upgrade completes.")
+	assertManualMigrationRollout(t, spec.DockerComposeRollout, "omeka-classic")
 
 	sdk := plugin.NewSDK(plugin.Metadata{Name: "omeka-classic"})
 	RegisterCommands(sdk)
@@ -32,7 +30,7 @@ func TestCreateDefinitionLifecycleContract(t *testing.T) {
 	}
 }
 
-func assertManualMigrationRollout(t *testing.T, commands []string, service, migrationMarker string) {
+func assertManualMigrationRollout(t *testing.T, commands []string, service string) {
 	t.Helper()
 
 	if len(commands) != 8 {
@@ -45,281 +43,23 @@ func assertManualMigrationRollout(t *testing.T, commands []string, service, migr
 	if initialStart != "docker compose up --remove-orphans --pull missing --quiet-pull -d "+service || strings.Contains(initialStart, "--wait") {
 		t.Fatalf("migration inspection must start only %s: %q", service, initialStart)
 	}
-	if !strings.Contains(commands[5], "until test -f /installed") || !strings.Contains(commands[5], "deadline=") || !strings.Contains(commands[5], "+ 600") || !strings.Contains(commands[5], "--max-time 5") || !strings.Contains(commands[5], "/status") {
-		t.Fatalf("migration inspection readiness must be bounded: %q", commands[5])
+	wantReadiness := "docker compose exec -T " + service + " /usr/local/bin/sitectl-omeka-classic-rollout wait-ready"
+	if commands[5] != wantReadiness {
+		t.Fatalf("migration readiness must invoke the checked-in program: got %q, want %q", commands[5], wantReadiness)
 	}
-	gate := commands[6]
-	if !strings.HasPrefix(gate, "docker compose exec -T "+service+" ") {
-		t.Fatalf("migration gate must begin with a rewritable Compose command: %q", gate)
-	}
-	for _, required := range []string{migrationMarker, "--connect-timeout 2", "--max-time 30", "ACTION REQUIRED", "Public Traefik remains stopped", "sitectl port-forward", "http://localhost:8080/admin", "sitectl deploy --skip-git --no-pull", "same --context NAME", "exit 10"} {
-		if !strings.Contains(gate, required) {
-			t.Fatalf("manual migration gate missing %q: %q", required, gate)
-		}
-	}
-	if strings.Contains(gate, "|| true") {
-		t.Fatalf("manual migration inspection must fail hard: %q", gate)
+	wantGate := "docker compose exec -T " + service + " /usr/local/bin/sitectl-omeka-classic-rollout check-migration"
+	if commands[6] != wantGate {
+		t.Fatalf("migration gate must invoke the checked-in program: got %q, want %q", commands[6], wantGate)
 	}
 	finalStart := commands[7]
 	if finalStart != "docker compose up --remove-orphans --wait --wait-timeout 600 --pull missing --quiet-pull -d" {
 		t.Fatalf("bounded full-stack start must run only after migration is current: %q", finalStart)
 	}
 	for _, command := range commands {
-		if output, err := exec.Command("bash", "-n", "-c", command).CombinedOutput(); err != nil {
-			t.Fatalf("rollout command has invalid shell syntax: %v\n%s\n%s", err, output, command)
-		}
-		assertNestedShellSyntax(t, command)
-	}
-}
-
-func assertNestedShellSyntax(t *testing.T, command string) {
-	t.Helper()
-	const marker = "sh -c '"
-	start := strings.Index(command, marker)
-	if start == -1 {
-		return
-	}
-	if !strings.HasSuffix(command, "'") {
-		t.Fatalf("nested shell command is not single-quote terminated: %q", command)
-	}
-	script := command[start+len(marker) : len(command)-1]
-	if output, err := exec.Command("sh", "-n", "-c", script).CombinedOutput(); err != nil {
-		t.Fatalf("nested shell command has invalid syntax: %v\n%s\n%s", err, output, script)
-	}
-}
-
-func TestManualMigrationGateBehavior(t *testing.T) {
-	t.Parallel()
-	gate := createDefinition().DockerComposeRollout[6]
-	tests := []struct {
-		name       string
-		curlBody   string
-		curlExit   int
-		wantExit   int
-		wantOutput string
-	}{
-		{name: "database current", curlBody: "<html>current</html>", wantExit: 0},
-		{name: "migration required", curlBody: "Public site is unavailable until the upgrade completes.", wantExit: 10, wantOutput: "ACTION REQUIRED"},
-		{name: "curl failure", curlExit: 28, wantExit: 28, wantOutput: "curl status 28"},
-	}
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			env, _ := installRolloutStubs(t, test.curlBody, test.curlExit)
-			command := exec.Command("bash", "-c", gate)
-			command.Env = env
-			output, err := command.CombinedOutput()
-			if got := commandExitCode(t, err); got != test.wantExit {
-				t.Fatalf("gate exit = %d, want %d; output:\n%s", got, test.wantExit, output)
+		for _, forbidden := range []string{"sh -c", "bash -c", "php -r", "php:eval"} {
+			if strings.Contains(command, forbidden) {
+				t.Fatalf("rollout embeds %q instead of invoking a checked-in program: %q", forbidden, command)
 			}
-			if test.wantOutput != "" && !strings.Contains(string(output), test.wantOutput) {
-				t.Fatalf("gate output missing %q:\n%s", test.wantOutput, output)
-			}
-		})
-	}
-}
-
-func TestMigrationReadinessUsesWallClockDeadline(t *testing.T) {
-	t.Parallel()
-	readiness := createDefinition().DockerComposeRollout[5]
-	env, logPath := installRolloutStubs(t, "", 0)
-	dateState := filepath.Join(filepath.Dir(logPath), "date.state")
-	dateStub := `#!/bin/sh
-set -eu
-if [ ! -e "$FAKE_DATE_STATE" ]; then
-  : >"$FAKE_DATE_STATE"
-  printf '%s\n' 100
-else
-  printf '%s\n' 701
-fi
-`
-	if err := os.WriteFile(filepath.Join(filepath.Dir(logPath), "date"), []byte(dateStub), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	env = append(env, "FAKE_EXECUTE_READINESS=1", "FAKE_DATE_STATE="+dateState)
-	command := exec.Command("bash", "-c", readiness)
-	command.Env = env
-	output, err := command.CombinedOutput()
-	if got := commandExitCode(t, err); got != 1 {
-		t.Fatalf("readiness exit = %d, want 1; output:\n%s", got, output)
-	}
-	if !strings.Contains(string(output), "within 10 minutes") {
-		t.Fatalf("readiness did not report its wall-clock deadline:\n%s", output)
-	}
-}
-
-func TestManualMigrationStopsBeforeFullStackStart(t *testing.T) {
-	t.Parallel()
-	commands := createDefinition().DockerComposeRollout
-	env, logPath := installRolloutStubs(t, "Public site is unavailable until the upgrade completes.", 0)
-
-	var gateOutput []byte
-	gateExit := 0
-	for _, commandText := range commands[4:] {
-		command := exec.Command("bash", "-c", commandText)
-		command.Env = env
-		output, err := command.CombinedOutput()
-		if err != nil {
-			gateOutput = output
-			gateExit = commandExitCode(t, err)
-			break
 		}
 	}
-	if gateExit != 10 || !strings.Contains(string(gateOutput), "ACTION REQUIRED") {
-		t.Fatalf("migration gate did not stop rollout: exit=%d output=%s", gateExit, gateOutput)
-	}
-	calls, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(calls), "up --remove-orphans --pull missing --quiet-pull -d omeka-classic") {
-		t.Fatalf("app-only start was not attempted:\n%s", calls)
-	}
-	if strings.Contains(string(calls), "up --remove-orphans --wait --wait-timeout 600") {
-		t.Fatalf("full-stack start ran after a failed migration gate:\n%s", calls)
-	}
-}
-
-func TestManualMigrationRolloutEndToEndBranches(t *testing.T) {
-	t.Parallel()
-	commands := createDefinition().DockerComposeRollout[4:]
-
-	t.Run("current database opens full stack", func(t *testing.T) {
-		t.Parallel()
-		env, logPath := installRolloutStubs(t, "<html>current</html>", 0)
-		output, exitCode := runRolloutBranch(t, commands, env)
-		if exitCode != 0 {
-			t.Fatalf("current rollout exit = %d, want 0; output:\n%s", exitCode, output)
-		}
-		assertAppThenFullStackStart(t, logPath, "omeka-classic")
-	})
-
-	t.Run("required migration blocks then completed migration recovers", func(t *testing.T) {
-		t.Parallel()
-		env, logPath := installRolloutStubs(t, "Public site is unavailable until the upgrade completes.", 0)
-		output, exitCode := runRolloutBranch(t, commands, env)
-		if exitCode != 10 || !strings.Contains(string(output), "ACTION REQUIRED") {
-			t.Fatalf("migration-required rollout exit = %d, want 10; output:\n%s", exitCode, output)
-		}
-		before, err := os.ReadFile(logPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(before), "up --remove-orphans --wait --wait-timeout 600") {
-			t.Fatalf("full stack opened before migration completion:\n%s", before)
-		}
-
-		env = replaceRolloutEnv(env, "FAKE_CURL_BODY", "<html>current after operator migration</html>")
-		output, exitCode = runRolloutBranch(t, commands, env)
-		if exitCode != 0 {
-			t.Fatalf("post-migration rollout exit = %d, want 0; output:\n%s", exitCode, output)
-		}
-		assertAppThenFullStackStart(t, logPath, "omeka-classic")
-	})
-}
-
-func runRolloutBranch(t *testing.T, commands []string, env []string) ([]byte, int) {
-	t.Helper()
-	var combined []byte
-	for _, commandText := range commands {
-		command := exec.Command("bash", "-c", commandText)
-		command.Env = env
-		output, err := command.CombinedOutput()
-		combined = append(combined, output...)
-		if err != nil {
-			return combined, commandExitCode(t, err)
-		}
-	}
-	return combined, 0
-}
-
-func replaceRolloutEnv(env []string, key, value string) []string {
-	updated := append([]string{}, env...)
-	prefix := key + "="
-	for index, item := range updated {
-		if strings.HasPrefix(item, prefix) {
-			updated[index] = prefix + value
-			return updated
-		}
-	}
-	return append(updated, prefix+value)
-}
-
-func assertAppThenFullStackStart(t *testing.T, logPath, service string) {
-	t.Helper()
-	calls, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	log := string(calls)
-	appStart := strings.LastIndex(log, "up --remove-orphans --pull missing --quiet-pull -d "+service)
-	fullStart := strings.LastIndex(log, "up --remove-orphans --wait --wait-timeout 600 --pull missing --quiet-pull -d")
-	if appStart == -1 || fullStart == -1 || appStart >= fullStart {
-		t.Fatalf("rollout did not keep app-only inspection before full-stack start:\n%s", log)
-	}
-}
-
-func commandExitCode(t *testing.T, err error) int {
-	t.Helper()
-	if err == nil {
-		return 0
-	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("command failed without an exit status: %v", err)
-	}
-	return exitErr.ExitCode()
-}
-
-func installRolloutStubs(t *testing.T, curlBody string, curlExit int) ([]string, string) {
-	t.Helper()
-	binDir := t.TempDir()
-	logPath := filepath.Join(binDir, "docker.log")
-	dockerStub := `#!/bin/sh
-set -eu
-printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
-if [ "${1:-}" != compose ]; then
-  exit 64
-fi
-case "${2:-}" in
-  up|pull|build|run)
-    exit 0
-    ;;
-  exec)
-    case "$*" in
-      *http://127.0.0.1/status*)
-        if [ "${FAKE_EXECUTE_READINESS:-0}" -ne 1 ]; then
-          exit 0
-        fi
-        ;;
-    esac
-    shift 4
-    exec "$@"
-    ;;
-  *)
-    exit 64
-    ;;
-esac
-`
-	curlStub := `#!/bin/sh
-set -eu
-if [ "${FAKE_CURL_EXIT:-0}" -ne 0 ]; then
-  exit "$FAKE_CURL_EXIT"
-fi
-printf '%s' "${FAKE_CURL_BODY:-}"
-`
-	for name, content := range map[string]string{"docker": dockerStub, "curl": curlStub} {
-		if err := os.WriteFile(filepath.Join(binDir, name), []byte(content), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	env := append([]string{}, os.Environ()...)
-	env = append(env,
-		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"FAKE_DOCKER_LOG="+logPath,
-		"FAKE_CURL_BODY="+curlBody,
-		fmt.Sprintf("FAKE_CURL_EXIT=%d", curlExit),
-	)
-	return env, logPath
 }

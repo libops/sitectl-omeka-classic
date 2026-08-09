@@ -8,7 +8,7 @@ import (
 
 const (
 	createRepo   = "https://github.com/libops/omeka-classic"
-	createBranch = "v1.0.0"
+	createBranch = "v1.2.0"
 	pluginName   = "omeka-classic"
 	defaultPath  = "./omeka-classic"
 )
@@ -53,8 +53,8 @@ func createDefinition() plugin.CreateSpec {
 			"mkdir -p ./secrets",
 			"docker compose run --rm init",
 			"docker compose up --remove-orphans --pull missing --quiet-pull -d omeka-classic",
-			"docker compose exec -T omeka-classic sh -c 'started=$(date +%s) || exit 1; deadline=$((started + 600)); until test -f /installed && curl --connect-timeout 2 --max-time 5 -fsS http://127.0.0.1/status | grep -q pool; do now=$(date +%s) || exit 1; if [ \"$now\" -ge \"$deadline\" ]; then echo \"Omeka Classic did not become ready for migration inspection within 10 minutes\" >&2; exit 1; fi; sleep 2; done'",
-			"docker compose exec -T omeka-classic sh -c 'body=$(curl --connect-timeout 2 --max-time 30 -fsS http://127.0.0.1/) || { status=$?; echo \"Unable to inspect Omeka Classic migration state (curl status $status)\" >&2; exit \"$status\"; }; if printf \"%s\" \"$body\" | grep -Fq \"Public site is unavailable until the upgrade completes.\"; then printf \"%s\\n\" \"ACTION REQUIRED: Omeka Classic requires its supported browser migration. Public Traefik remains stopped. Run sitectl port-forward 8080:omeka-classic:80, open http://localhost:8080/admin, complete the migration, stop the forward, and rerun sitectl deploy --skip-git --no-pull. If this deploy selected a non-active context, pass the same --context NAME to both sitectl commands.\" >&2; exit 10; fi'",
+			"docker compose exec -T omeka-classic /usr/local/bin/sitectl-omeka-classic-rollout wait-ready",
+			"docker compose exec -T omeka-classic /usr/local/bin/sitectl-omeka-classic-rollout check-migration",
 			"docker compose up --remove-orphans --wait --wait-timeout 600 --pull missing --quiet-pull -d",
 		},
 	}

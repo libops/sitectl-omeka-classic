@@ -6,7 +6,7 @@ Documentation: https://sitectl.libops.io/plugins/omeka-classic
 
 ## Requirements
 
-- [`sitectl`](https://sitectl.libops.io/install) v1.7.0 or newer provides the RPC verifier SDK; promotion must pin the first core release that also includes `verify --strict` semantics.
+- [`sitectl`](https://sitectl.libops.io/install) v1.8.2 or newer provides the supported RPC verifier and strict-verification contract.
 - Docker with the Compose v2 plugin for local Omeka Classic sites.
 - No additional app-plugin dependency beyond core `sitectl`.
 
@@ -43,7 +43,7 @@ sitectl verify --strict
 
 ## Behavioral verification
 
-`sitectl verify --strict` checks the running Omeka Classic version, scoped MariaDB identity, current browser-migration state, default-install application metadata, and files-volume access. It does not depend on the optional REST API, which a default installation disables. The database probe reads the connection selected by the rendered `db.ini`; its password stays inside the container and is never copied into Docker process arguments or verifier output. Production verification is read-only.
+`sitectl verify --strict` checks the running Omeka Classic version, scoped MariaDB identity, current browser-migration state, default-install application metadata, and files-volume access. Runtime inspection uses checked-in programs mounted read-only by template v1.2.0; the plugin invokes those programs by stable paths instead of embedding PHP, SQL, or shell source in generated commands. It does not depend on the optional REST API, which a default installation disables. The database probe reads the connection selected by the rendered `db.ini`; its password stays inside the container and is never copied into Docker process arguments or verifier output. Production verification is read-only.
 
 Disposable CI may add a reversible service-account file write/read/delete probe:
 
