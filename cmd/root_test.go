@@ -10,8 +10,8 @@ import (
 func TestCreateDefinitionLifecycleContract(t *testing.T) {
 	t.Parallel()
 	spec := createDefinition()
-	if spec.DockerComposeBranch != "v1.2.0" {
-		t.Fatalf("Omeka Classic template revision = %q, want immutable v1.2.0", spec.DockerComposeBranch)
+	if spec.DockerComposeBranch != "v1.2.1" {
+		t.Fatalf("Omeka Classic template revision = %q, want immutable v1.2.1", spec.DockerComposeBranch)
 	}
 	if len(spec.Images) != 1 || spec.Images[0].Image != "libops/omeka-classic:3.2.1-php84" || spec.Images[0].BuildPolicy != plugin.BuildPolicyAlways {
 		t.Fatalf("unexpected Omeka Classic image contract: %+v", spec.Images)
