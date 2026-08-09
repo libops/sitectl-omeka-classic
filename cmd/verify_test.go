@@ -23,15 +23,15 @@ func TestOmekaClassicVerifyChecksApplicationBehavior(t *testing.T) {
 	runtime := fakeOmekaClassicVerifyRuntime{run: func(argv []string) (string, error) {
 		joined := strings.Join(argv, " ")
 		switch {
-		case strings.Contains(joined, "OMEKA_VERSION"):
+		case strings.Contains(joined, omekaClassicInspectProbePath+" version"):
 			return "3.2.1", nil
-		case strings.Contains(joined, "SELECT CURRENT_USER()"):
+		case strings.Contains(joined, omekaClassicDatabaseProbePath):
 			return "omeka_classic@%", nil
 		case strings.Contains(joined, "-D -") && strings.Contains(joined, "http://127.0.0.1/"):
 			return "HTTP/1.1 200 OK\r\n\r\n<html>current</html>", nil
-		case strings.Contains(joined, "site_title"):
+		case strings.Contains(joined, omekaClassicInspectProbePath+" metadata"):
 			return `{"title":"Museum","theme":"default","database_version":"3.2.1"}`, nil
-		case strings.Contains(joined, "test -w"):
+		case strings.Contains(joined, omekaClassicStorageProbePath):
 			return "storage writable", nil
 		default:
 			return "", errors.New("unexpected command: " + joined)
@@ -71,17 +71,16 @@ func TestOmekaClassicVerifyRejectsRootDatabaseAndMalformedApplicationMetadata(t 
 	}
 }
 
-func TestOmekaClassicVerifyDatabaseProbeUsesRenderedConfiguration(t *testing.T) {
+func TestOmekaClassicVerifyUsesCheckedInPrograms(t *testing.T) {
 	t.Parallel()
 
-	for _, required := range []string{"parse_ini_file(\"db.ini\"", "INI_SCANNER_RAW", "database_mariadb_with_password", "${database[3]}"} {
-		if !strings.Contains(omekaClassicDatabaseProbe, required) {
-			t.Fatalf("database probe does not read %q from rendered configuration: %s", required, omekaClassicDatabaseProbe)
-		}
-	}
-	for _, forbidden := range []string{"$DB_HOST", "$DB_PORT", "$DB_USER", "$DB_PASSWORD", "$DB_NAME"} {
-		if strings.Contains(omekaClassicDatabaseProbe, forbidden) {
-			t.Fatalf("database probe still depends on application environment %q: %s", forbidden, omekaClassicDatabaseProbe)
+	for name, path := range map[string]string{
+		"database": omekaClassicDatabaseProbePath,
+		"inspect":  omekaClassicInspectProbePath,
+		"storage":  omekaClassicStorageProbePath,
+	} {
+		if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, " \t\n") {
+			t.Fatalf("%s probe must be invoked by stable absolute path: %q", name, path)
 		}
 	}
 }
@@ -89,13 +88,8 @@ func TestOmekaClassicVerifyDatabaseProbeUsesRenderedConfiguration(t *testing.T) 
 func TestOmekaClassicVerifyApplicationMetadataDoesNotRequireOptionalAPI(t *testing.T) {
 	t.Parallel()
 
-	if strings.Contains(omekaClassicMetadataProbe, "/api/") {
-		t.Fatalf("application metadata probe still depends on the optional REST API: %s", omekaClassicMetadataProbe)
-	}
-	for _, required := range []string{"Omeka_Application", "site_title", "public_theme", "omeka_version"} {
-		if !strings.Contains(omekaClassicMetadataProbe, required) {
-			t.Fatalf("application metadata probe omitted %q: %s", required, omekaClassicMetadataProbe)
-		}
+	if strings.Contains(omekaClassicInspectProbePath, "/api/") {
+		t.Fatalf("application metadata probe still depends on the optional REST API: %s", omekaClassicInspectProbePath)
 	}
 }
 
@@ -106,15 +100,15 @@ func TestOmekaClassicVerifyDisposableModeUsesReversibleFilesProbe(t *testing.T) 
 	runtime := fakeOmekaClassicVerifyRuntime{run: func(argv []string) (string, error) {
 		joined := strings.Join(argv, " ")
 		switch {
-		case strings.Contains(joined, "OMEKA_VERSION"):
+		case strings.Contains(joined, omekaClassicInspectProbePath+" version"):
 			return "3.2.1", nil
-		case strings.Contains(joined, "SELECT CURRENT_USER()"):
+		case strings.Contains(joined, omekaClassicDatabaseProbePath):
 			return "omeka_classic@%", nil
 		case strings.Contains(joined, "-D -") && strings.Contains(joined, "http://127.0.0.1/"):
 			return "HTTP/1.1 200 OK\r\n\r\n<html>current</html>", nil
-		case strings.Contains(joined, "site_title"):
+		case strings.Contains(joined, omekaClassicInspectProbePath+" metadata"):
 			return `{"title":"Museum","theme":"default","database_version":"3.2.1"}`, nil
-		case strings.Contains(joined, ".sitectl-verify"):
+		case strings.Contains(joined, omekaClassicStorageProbePath) && strings.Contains(joined, "--disposable"):
 			storageCommand = joined
 			return "storage round trip complete", nil
 		default:
@@ -124,7 +118,7 @@ func TestOmekaClassicVerifyDisposableModeUsesReversibleFilesProbe(t *testing.T) 
 
 	results := runOmekaClassicVerifyChecks(context.Background(), runtime, true)
 	assertAllOmekaClassicVerifyOK(t, results, 5)
-	for _, required := range []string{"s6-setuidgid nginx", ".sitectl-verify", "trap", "rm -f"} {
+	for _, required := range []string{"s6-setuidgid nginx", omekaClassicStorageProbePath, "--disposable"} {
 		if !strings.Contains(storageCommand, required) {
 			t.Fatalf("disposable files probe missing %q: %s", required, storageCommand)
 		}

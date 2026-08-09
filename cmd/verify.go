@@ -15,13 +15,12 @@ import (
 )
 
 const (
-	omekaClassicService          = "omeka-classic"
-	omekaClassicRoot             = "/var/www/omeka-classic"
-	omekaClassicExpectedVersion  = "3.2.1"
-	omekaClassicDatabaseProbe    = `. /usr/local/share/libops/database.sh; mapfile -d '' -t database < <(php -r '$config = parse_ini_file("db.ini", true, INI_SCANNER_RAW); $database = $config["database"] ?? null; if (!is_array($database)) { fwrite(STDERR, "db.ini omitted [database]\n"); exit(2); } foreach (["host", "port", "username", "password", "dbname"] as $key) { $value = $database[$key] ?? ""; if (!is_string($value) || $value === "") { fwrite(STDERR, "db.ini database." . $key . " is empty\n"); exit(2); } fwrite(STDOUT, $value . "\0"); }'); if [ "${#database[@]}" -ne 5 ]; then printf '%s\n' 'could not read database credentials from db.ini' >&2; exit 2; fi; database_mariadb_with_password "${database[3]}" --host="${database[0]}" --port="${database[1]}" --user="${database[2]}" --database="${database[4]}" --batch --skip-column-names --execute="SELECT CURRENT_USER();"`
-	omekaClassicMetadataProbe    = `$_SERVER["HTTP_HOST"] = "127.0.0.1"; $_SERVER["SCRIPT_NAME"] = "/index.php"; require "bootstrap.php"; $application = new Omeka_Application(APPLICATION_ENV); $application->bootstrap(["Config", "Db", "Options"]); echo json_encode(["title" => get_option("site_title"), "theme" => get_option("public_theme"), "database_version" => get_option("omeka_version")], JSON_THROW_ON_ERROR);`
-	omekaClassicReadOnlyStorage  = `test -r /var/www/omeka-classic/files && test -w /var/www/omeka-classic/files && printf '%s\n' 'storage writable'`
-	omekaClassicStorageRoundTrip = `probe=/var/www/omeka-classic/files/.sitectl-verify-$$; cleanup() { rm -f -- "$probe"; }; trap cleanup EXIT INT TERM; printf '%s' sitectl-verify >"$probe"; test "$(cat "$probe")" = sitectl-verify; cleanup; trap - EXIT INT TERM; printf '%s\n' 'storage round trip complete'`
+	omekaClassicService           = "omeka-classic"
+	omekaClassicRoot              = "/var/www/omeka-classic"
+	omekaClassicExpectedVersion   = "3.2.1"
+	omekaClassicDatabaseProbePath = "/usr/local/bin/sitectl-omeka-classic-verify-database"
+	omekaClassicInspectProbePath  = "/usr/local/share/libops/sitectl-omeka-classic-inspect.php"
+	omekaClassicStorageProbePath  = "/usr/local/bin/sitectl-omeka-classic-verify-storage"
 )
 
 type omekaClassicVerifyRuntime interface {
@@ -69,25 +68,25 @@ func (r *omekaClassicVerifyRunner) Run(cmd *cobra.Command, _ *config.Context) ([
 func runOmekaClassicVerifyChecks(ctx context.Context, runtime omekaClassicVerifyRuntime, disposable bool) []sitevalidate.Result {
 	results := make([]sitevalidate.Result, 0, 5)
 
-	versionOutput, versionErr := runtime.ExecCapture(ctx, []string{"php", "-r", `require "bootstrap.php"; echo OMEKA_VERSION;`})
+	versionOutput, versionErr := runtime.ExecCapture(ctx, []string{"php", omekaClassicInspectProbePath, "version"})
 	results = append(results, omekaClassicVersionResult(versionOutput, versionErr))
 
-	databaseOutput, databaseErr := runtime.ExecCapture(ctx, []string{"bash", "-lc", omekaClassicDatabaseProbe})
+	databaseOutput, databaseErr := runtime.ExecCapture(ctx, []string{omekaClassicDatabaseProbePath})
 	results = append(results, omekaClassicDatabaseResult(databaseOutput, databaseErr))
 
 	migrationOutput, migrationErr := runtime.ExecCapture(ctx, []string{"curl", "--connect-timeout", "2", "--max-time", "30", "-sS", "-D", "-", "http://127.0.0.1/"})
 	results = append(results, omekaClassicMigrationResult(migrationOutput, migrationErr))
 
-	metadataOutput, metadataErr := runtime.ExecCapture(ctx, []string{"php", "-r", omekaClassicMetadataProbe})
+	metadataOutput, metadataErr := runtime.ExecCapture(ctx, []string{"php", omekaClassicInspectProbePath, "metadata"})
 	results = append(results, omekaClassicApplicationResult(metadataOutput, metadataErr))
 
-	storageScript := omekaClassicReadOnlyStorage
+	storageArgv := []string{"s6-setuidgid", "nginx", omekaClassicStorageProbePath}
 	storageDetail := "files storage is writable by the Omeka Classic service account"
 	if disposable {
-		storageScript = omekaClassicStorageRoundTrip
+		storageArgv = append(storageArgv, "--disposable")
 		storageDetail = "files storage completed a reversible write/read/delete round trip"
 	}
-	_, storageErr := runtime.ExecCapture(ctx, []string{"s6-setuidgid", "nginx", "sh", "-ec", storageScript})
+	_, storageErr := runtime.ExecCapture(ctx, storageArgv)
 	if storageErr != nil {
 		results = append(results, omekaClassicVerifyFailed("verify:omeka-classic:files", storageErr.Error(), "repair ownership and permissions for /var/www/omeka-classic/files"))
 	} else {
